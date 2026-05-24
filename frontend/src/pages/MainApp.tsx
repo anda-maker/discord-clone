@@ -56,9 +56,12 @@ export default function MainApp() {
 
   const handleJoinVoice = (channel: Channel) => {
     if (voiceChannel?.id === channel.id) {
+      // Already in this voice channel → disconnect
       setVoiceChannel(null);
     } else {
+      // Switch into the voice channel — show the call UI in the main area
       setVoiceChannel(channel);
+      setSelectedChannel(channel);
     }
   };
 

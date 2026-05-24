@@ -104,7 +104,15 @@ export default function ChannelSidebar({
                       channel={channel}
                       selected={selectedChannel?.id === channel.id}
                       inVoice={inVoice}
-                      onClick={() => channel.type === 'voice' ? onJoinVoice(channel) : onSelectChannel(channel)}
+                      onClick={() => {
+                        if (channel.type === 'voice') {
+                          // Select + join — VoiceArea mounts immediately
+                          onSelectChannel(channel);
+                          onJoinVoice(channel);
+                        } else {
+                          onSelectChannel(channel);
+                        }
+                      }}
                     />
                     {inVoice && (
                       <div className="mx-3 mt-1 mb-2 bg-discord-online/10 border border-discord-online/40 rounded-md p-2 animate-fade-in">

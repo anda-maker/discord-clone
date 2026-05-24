@@ -3,74 +3,98 @@ import { Channel, Server, VoiceUser } from '../../types';
 import { useAuthStore } from '../../store/authStore';
 import { getSocket } from '../../lib/socket';
 import {
-  Mic, MicOff, Video, VideoOff, PhoneOff, Volume2, Monitor, MonitorOff,
-  PartyPopper, MoreHorizontal, ChevronDown, Headphones, Users,
+  Mic, MicOff, Video, VideoOff, Monitor, MonitorOff,
+  PhoneOff, Volume2, Users,
 } from 'lucide-react';
+
+// ─── Props ────────────────────────────────────────────────────────────────────
 
 interface Props {
   channel: Channel;
   server: Server;
+  /** True when MainApp considers us connected to this voice channel. */
   isConnected: boolean;
+  /** Toggle handler — called when user presses the red leave button. */
   onJoin: () => void;
 }
 
-// Color palette inspired by the Figma design — one solid background per tile.
-const TILE_COLORS = ['#3a3a3a', '#7c8694', '#a07849', '#7a2a2c', '#3b5b6e', '#5d4e7a', '#4a6b3f', '#a04848'];
-function tileColorFor(seed: string): string {
-  let hash = 0;
-  for (const c of seed) hash = (c.charCodeAt(0) + ((hash << 5) - hash)) | 0;
-  return TILE_COLORS[Math.abs(hash) % TILE_COLORS.length];
-}
-
-// Discord-style avatar color
-const AVATAR_COLORS = ['#5865f2', '#eb459e', '#fee75c', '#23a55a', '#ed4245', '#f0b232', '#3ba55d', '#9b59b6'];
-function avatarColorFor(seed: string): string {
-  let hash = 0;
-  for (const c of seed) hash = (c.charCodeAt(0) + ((hash << 5) - hash)) | 0;
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
-}
-
 interface Participant {
-  socketId: string;
+  socketId: string;   // 'local' for the current user
   userId: string;
   username: string;
   avatar_url?: string;
-  muted?: boolean;
+  muted: boolean;
   isLocal: boolean;
-  stream?: MediaStream | null;
+  stream: MediaStream | null;
 }
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const TILE_COLORS   = ['#36393f', '#4a4a6a', '#6a4a4a', '#4a6a4a', '#6a6a4a'];
+const AVATAR_COLORS = ['#5865f2', '#eb459e', '#23a55a', '#ed4245', '#f0b232', '#3ba55d', '#9b59b6'];
+
+function hashIndex(seed: string, mod: number): number {
+  let h = 0;
+  for (const ch of seed) h = (ch.charCodeAt(0) + ((h << 5) - h)) | 0;
+  return Math.abs(h) % mod;
+}
+const tileColor   = (s: string) => TILE_COLORS  [hashIndex(s, TILE_COLORS.length)];
+const avatarColor = (s: string) => AVATAR_COLORS[hashIndex(s, AVATAR_COLORS.length)];
+
+/** Dynamic grid: 1 full, 2 side-by-side, 3–4 2×2, 5–6 2×3, more wraps. */
+function gridStyle(n: number): React.CSSProperties {
+  if (n <= 1) return { gridTemplateColumns: '1fr',     gridTemplateRows: '1fr' };
+  if (n === 2) return { gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr' };
+  if (n <= 4) return { gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr 1fr' };
+  if (n <= 6) return { gridTemplateColumns: '1fr 1fr 1fr', gridTemplateRows: '1fr 1fr' };
+  return { gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' };
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export default function VoiceArea({ channel, server, isConnected, onJoin }: Props) {
   const { user } = useAuthStore();
-  const [voiceUsers, setVoiceUsers] = useState<VoiceUser[]>([]);
-  const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
-  const [muted, setMuted] = useState(false);
-  const [videoOn, setVideoOn] = useState(false);
-  const [screenSharing, setScreenSharing] = useState(false);
-  const [speakingIds, setSpeakingIds] = useState<Set<string>>(new Set());
-  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const socket = getSocket();
-  const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
-  const localVideoRef = useRef<HTMLVideoElement>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const analyserCleanupsRef = useRef<Map<string, () => void>>(new Map());
-  const screenStreamRef = useRef<MediaStream | null>(null);
-  const cameraTrackRef = useRef<MediaStreamTrack | null>(null);
+  const socket   = getSocket();
 
-  // ---------- Speaking detection (Web Audio API) ----------
-  const attachAnalyser = useCallback((id: string, stream: MediaStream) => {
-    if (analyserCleanupsRef.current.has(id)) return;
+  // Real-time peer roster (excluding us)
+  const [voiceUsers,    setVoiceUsers]    = useState<VoiceUser[]>([]);
+  const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
+
+  // Local media
+  const [localStream,   setLocalStream]   = useState<MediaStream | null>(null);
+  const [muted,         setMuted]         = useState(false);
+  const [videoOn,       setVideoOn]       = useState(false);
+  const [screenSharing, setScreenSharing] = useState(false);
+
+  // Speaking detection
+  const [speakingIds,   setSpeakingIds]   = useState<Set<string>>(new Set());
+
+  // Refs that don't trigger re-renders
+  const peersRef         = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const localStreamRef   = useRef<MediaStream | null>(null);
+  const screenStreamRef  = useRef<MediaStream | null>(null);
+  const cameraTrackRef   = useRef<MediaStreamTrack | null>(null);
+  const audioCtxRef      = useRef<AudioContext | null>(null);
+  const analyserCleanups = useRef<Map<string, () => void>>(new Map());
+
+  useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
+
+  // ─── Speaking detection (Web Audio API) ─────────────────────────────────────
+
+  const attachSpeaking = useCallback((id: string, stream: MediaStream) => {
+    if (analyserCleanups.current.has(id)) return;
     const audioTrack = stream.getAudioTracks()[0];
     if (!audioTrack) return;
     try {
       if (!audioCtxRef.current) audioCtxRef.current = new AudioContext();
-      const ctx = audioCtxRef.current;
-      const source = ctx.createMediaStreamSource(new MediaStream([audioTrack]));
+      const ctx      = audioCtxRef.current;
+      const source   = ctx.createMediaStreamSource(new MediaStream([audioTrack]));
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 256;
       source.connect(analyser);
       const data = new Uint8Array(analyser.frequencyBinCount);
       let raf = 0;
+
       const tick = () => {
         analyser.getByteFrequencyData(data);
         let sum = 0;
@@ -78,24 +102,29 @@ export default function VoiceArea({ channel, server, isConnected, onJoin }: Prop
         const avg = sum / data.length;
         setSpeakingIds(prev => {
           const speaking = avg > 22;
-          if (speaking && !prev.has(id)) { const n = new Set(prev); n.add(id); return n; }
-          if (!speaking && prev.has(id)) { const n = new Set(prev); n.delete(id); return n; }
+          if (speaking  && !prev.has(id)) { const n = new Set(prev); n.add(id);    return n; }
+          if (!speaking &&  prev.has(id)) { const n = new Set(prev); n.delete(id); return n; }
           return prev;
         });
         raf = requestAnimationFrame(tick);
       };
+
       raf = requestAnimationFrame(tick);
-      analyserCleanupsRef.current.set(id, () => { cancelAnimationFrame(raf); try { source.disconnect(); } catch {} });
+      analyserCleanups.current.set(id, () => {
+        cancelAnimationFrame(raf);
+        try { source.disconnect(); } catch {}
+      });
     } catch {}
   }, []);
 
-  const detachAnalyser = useCallback((id: string) => {
-    const cleanup = analyserCleanupsRef.current.get(id);
-    if (cleanup) { cleanup(); analyserCleanupsRef.current.delete(id); }
+  const detachSpeaking = useCallback((id: string) => {
+    analyserCleanups.current.get(id)?.();
+    analyserCleanups.current.delete(id);
   }, []);
 
-  // ---------- WebRTC peer setup ----------
-  const createPeer = useCallback((socketId: string, stream: MediaStream): RTCPeerConnection => {
+  // ─── WebRTC peer factory ────────────────────────────────────────────────────
+
+  const createPeer = useCallback((socketId: string, stream: MediaStream) => {
     const pc = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
@@ -103,96 +132,107 @@ export default function VoiceArea({ channel, server, isConnected, onJoin }: Prop
       ],
     });
 
-    stream.getTracks().forEach(track => pc.addTrack(track, stream));
+    stream.getTracks().forEach(t => pc.addTrack(t, stream));
 
     pc.onicecandidate = ({ candidate }) => {
       if (candidate) socket.emit('webrtc_ice_candidate', { to: socketId, candidate });
     };
 
-    pc.ontrack = (event) => {
-      const remoteStream = event.streams[0];
-      setRemoteStreams(prev => ({ ...prev, [socketId]: remoteStream }));
-      attachAnalyser(socketId, remoteStream);
+    pc.ontrack = ({ streams }) => {
+      const remote = streams[0];
+      setRemoteStreams(prev => ({ ...prev, [socketId]: remote }));
+      attachSpeaking(socketId, remote);
     };
 
     peersRef.current.set(socketId, pc);
     return pc;
-  }, [socket, attachAnalyser]);
+  }, [socket, attachSpeaking]);
 
-  const startMedia = useCallback(async (withVideo = false) => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: withVideo ? { width: 1280, height: 720 } : false,
-      });
-      setLocalStream(stream);
-      if (withVideo) cameraTrackRef.current = stream.getVideoTracks()[0] || null;
-      if (localVideoRef.current) localVideoRef.current.srcObject = stream;
-      attachAnalyser('local', stream);
-      return stream;
-    } catch {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        setLocalStream(stream);
-        attachAnalyser('local', stream);
-        return stream;
-      } catch { return null; }
-    }
-  }, [attachAnalyser]);
+  /** Hot-swap the video sender on every active peer (no renegotiation). */
+  const replaceVideoTrack = useCallback((track: MediaStreamTrack | null) => {
+    peersRef.current.forEach(pc => {
+      const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+      if (sender) {
+        sender.replaceTrack(track).catch(() => {});
+      } else if (track && localStreamRef.current) {
+        pc.addTrack(track, localStreamRef.current);
+      }
+    });
+  }, []);
 
-  // ---------- Lifecycle: join / leave voice ----------
+  // ─── Cleanup ────────────────────────────────────────────────────────────────
+
+  const fullCleanup = useCallback(() => {
+    peersRef.current.forEach(pc => pc.close());
+    peersRef.current.clear();
+    localStreamRef.current?.getTracks().forEach(t => t.stop());
+    screenStreamRef.current?.getTracks().forEach(t => t.stop());
+    screenStreamRef.current = null;
+    cameraTrackRef.current  = null;
+    analyserCleanups.current.forEach(fn => fn());
+    analyserCleanups.current.clear();
+    setLocalStream(null);
+    setVoiceUsers([]);
+    setRemoteStreams({});
+    setSpeakingIds(new Set());
+    setMuted(false);
+    setVideoOn(false);
+    setScreenSharing(false);
+  }, []);
+
+  // ─── Join / leave lifecycle ─────────────────────────────────────────────────
+
   useEffect(() => {
-    if (!isConnected) {
-      // Cleanup
-      peersRef.current.forEach(pc => pc.close());
-      peersRef.current.clear();
-      localStream?.getTracks().forEach(t => t.stop());
-      screenStreamRef.current?.getTracks().forEach(t => t.stop());
-      analyserCleanupsRef.current.forEach(fn => fn());
-      analyserCleanupsRef.current.clear();
-      setLocalStream(null);
-      setVoiceUsers([]);
-      setRemoteStreams({});
-      setSpeakingIds(new Set());
-      setVideoOn(false);
-      setScreenSharing(false);
-      return;
-    }
+    if (!isConnected) { fullCleanup(); return; }
 
+    let mounted = true;
     let stream: MediaStream | null = null;
 
     const init = async () => {
-      stream = await startMedia(false);
+      // Start with mic only — camera is toggled on demand
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch {
+        // Permissions denied or no mic — still let the user see the room
+        stream = new MediaStream();
+      }
+      if (!mounted) return;
+      setLocalStream(stream);
+      attachSpeaking('local', stream);
       socket.emit('join_voice', { channelId: channel.id });
     };
 
+    // Existing peers already in channel → we initiate offers to them
     const onPeers = async ({ peers }: { peers: VoiceUser[] }) => {
       if (!stream) return;
       for (const peer of peers) {
-        const pc = createPeer(peer.socketId, stream);
+        const pc    = createPeer(peer.socketId, stream);
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         socket.emit('webrtc_offer', { to: peer.socketId, offer });
       }
     };
 
+    // Real-time tile add
     const onUserJoined = (u: VoiceUser) => {
       setVoiceUsers(prev => [...prev.filter(x => x.socketId !== u.socketId), u]);
     };
 
+    // Real-time tile remove
     const onUserLeft = ({ socketId }: { socketId: string }) => {
       peersRef.current.get(socketId)?.close();
       peersRef.current.delete(socketId);
-      detachAnalyser(socketId);
+      detachSpeaking(socketId);
       setRemoteStreams(prev => { const { [socketId]: _, ...rest } = prev; return rest; });
       setVoiceUsers(prev => prev.filter(u => u.socketId !== socketId));
     };
 
+    // Authoritative sync — replaces our local roster with the server's
     const onMembers = ({ members }: { members: VoiceUser[] }) => {
       setVoiceUsers(members.filter(m => m.socketId !== socket.id));
     };
 
-    const onOffer = async ({ from, offer }: any) => {
+    const onOffer  = async ({ from, offer  }: { from: string; offer:  RTCSessionDescriptionInit }) => {
       if (!stream) return;
       const pc = createPeer(from, stream);
       await pc.setRemoteDescription(offer);
@@ -200,360 +240,325 @@ export default function VoiceArea({ channel, server, isConnected, onJoin }: Prop
       await pc.setLocalDescription(answer);
       socket.emit('webrtc_answer', { to: from, answer });
     };
-
-    const onAnswer = async ({ from, answer }: any) => {
-      await peersRef.current.get(from)?.setRemoteDescription(answer);
-    };
-
-    const onIce = async ({ from, candidate }: any) => {
-      await peersRef.current.get(from)?.addIceCandidate(candidate);
-    };
+    const onAnswer = async ({ from, answer }: { from: string; answer: RTCSessionDescriptionInit }) =>
+      { await peersRef.current.get(from)?.setRemoteDescription(answer); };
+    const onIce    = async ({ from, candidate }: { from: string; candidate: RTCIceCandidateInit }) =>
+      { try { await peersRef.current.get(from)?.addIceCandidate(candidate); } catch {} };
 
     init();
-
-    socket.on('voice_peers', onPeers);
-    socket.on('voice_user_joined', onUserJoined);
-    socket.on('voice_user_left', onUserLeft);
+    socket.on('voice_peers',           onPeers);
+    socket.on('voice_user_joined',     onUserJoined);
+    socket.on('voice_user_left',       onUserLeft);
     socket.on('voice_channel_members', onMembers);
-    socket.on('webrtc_offer', onOffer);
-    socket.on('webrtc_answer', onAnswer);
-    socket.on('webrtc_ice_candidate', onIce);
+    socket.on('webrtc_offer',          onOffer);
+    socket.on('webrtc_answer',         onAnswer);
+    socket.on('webrtc_ice_candidate',  onIce);
 
     return () => {
-      socket.off('voice_peers', onPeers);
-      socket.off('voice_user_joined', onUserJoined);
-      socket.off('voice_user_left', onUserLeft);
+      mounted = false;
+      socket.off('voice_peers',           onPeers);
+      socket.off('voice_user_joined',     onUserJoined);
+      socket.off('voice_user_left',       onUserLeft);
       socket.off('voice_channel_members', onMembers);
-      socket.off('webrtc_offer', onOffer);
-      socket.off('webrtc_answer', onAnswer);
-      socket.off('webrtc_ice_candidate', onIce);
+      socket.off('webrtc_offer',          onOffer);
+      socket.off('webrtc_answer',         onAnswer);
+      socket.off('webrtc_ice_candidate',  onIce);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isConnected, channel.id]);
 
-  // Keep local video element in sync when video toggles
-  useEffect(() => {
-    if (localVideoRef.current && localStream) {
-      localVideoRef.current.srcObject = localStream;
-    }
-  }, [localStream, videoOn, screenSharing]);
+  // ─── Controls ───────────────────────────────────────────────────────────────
 
-  // ---------- Controls ----------
   const toggleMute = () => {
-    if (!localStream) return;
+    const s = localStreamRef.current; if (!s) return;
     const next = !muted;
-    localStream.getAudioTracks().forEach(t => { t.enabled = !next; });
+    s.getAudioTracks().forEach(t => { t.enabled = !next; });
     setMuted(next);
   };
 
-  const replaceVideoSender = (track: MediaStreamTrack | null) => {
-    peersRef.current.forEach(pc => {
-      const sender = pc.getSenders().find(s => s.track?.kind === 'video');
-      if (sender) {
-        sender.replaceTrack(track);
-      } else if (track && localStream) {
-        pc.addTrack(track, localStream);
-      }
-    });
-  };
-
-  const toggleVideo = async () => {
-    // If currently screen-sharing, stop that first
-    if (screenSharing) {
-      stopScreenShare();
-    }
-    if (!videoOn) {
-      try {
-        const camStream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
-        const track = camStream.getVideoTracks()[0];
-        if (!track) return;
-        cameraTrackRef.current = track;
-        // Add to local stream so the local preview shows it
-        if (localStream) {
-          localStream.getVideoTracks().forEach(t => { t.stop(); localStream.removeTrack(t); });
-          localStream.addTrack(track);
-          if (localVideoRef.current) localVideoRef.current.srcObject = localStream;
-        }
-        replaceVideoSender(track);
-        setVideoOn(true);
-      } catch (e) {
-        console.error('camera failed', e);
-      }
-    } else {
-      if (localStream) {
-        localStream.getVideoTracks().forEach(t => { t.stop(); localStream.removeTrack(t); });
-      }
-      cameraTrackRef.current = null;
-      replaceVideoSender(null);
-      setVideoOn(false);
-    }
-  };
-
-  const stopScreenShare = () => {
-    const s = screenStreamRef.current;
-    if (s) s.getTracks().forEach(t => t.stop());
+  const stopScreenShare = async () => {
+    const ss = screenStreamRef.current;
+    if (ss) ss.getTracks().forEach(t => t.stop());
     screenStreamRef.current = null;
-    if (localStream) {
-      localStream.getVideoTracks().forEach(t => { t.stop(); localStream.removeTrack(t); });
-    }
-    // Restore camera if it was on
-    if (videoOn && cameraTrackRef.current) {
-      localStream?.addTrack(cameraTrackRef.current);
-      replaceVideoSender(cameraTrackRef.current);
-    } else {
-      replaceVideoSender(null);
+    const s = localStreamRef.current;
+    if (s) {
+      s.getVideoTracks().forEach(t => { t.stop(); s.removeTrack(t); });
+      if (videoOn && cameraTrackRef.current) {
+        s.addTrack(cameraTrackRef.current);
+        replaceVideoTrack(cameraTrackRef.current);
+      } else {
+        replaceVideoTrack(null);
+      }
+      setLocalStream(new MediaStream(s.getTracks())); // force tile re-render
     }
     setScreenSharing(false);
   };
 
+  const toggleCamera = async () => {
+    if (screenSharing) await stopScreenShare();
+
+    if (!videoOn) {
+      try {
+        const cam   = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
+        const track = cam.getVideoTracks()[0];
+        if (!track) return;
+        cameraTrackRef.current = track;
+        const s = localStreamRef.current;
+        if (s) {
+          s.getVideoTracks().forEach(t => { t.stop(); s.removeTrack(t); });
+          s.addTrack(track);
+          setLocalStream(new MediaStream(s.getTracks()));
+        }
+        replaceVideoTrack(track);
+        setVideoOn(true);
+      } catch (e) { console.warn('Camera access denied:', e); }
+    } else {
+      const s = localStreamRef.current;
+      if (s) {
+        s.getVideoTracks().forEach(t => { t.stop(); s.removeTrack(t); });
+        setLocalStream(new MediaStream(s.getTracks()));
+      }
+      cameraTrackRef.current = null;
+      replaceVideoTrack(null);
+      setVideoOn(false);
+    }
+  };
+
   const toggleScreenShare = async () => {
-    if (screenSharing) { stopScreenShare(); return; }
+    if (screenSharing) { await stopScreenShare(); return; }
     try {
       const display = await (navigator.mediaDevices as any).getDisplayMedia({ video: true, audio: false });
       const track: MediaStreamTrack = display.getVideoTracks()[0];
       if (!track) return;
       screenStreamRef.current = display;
-      // Add into local stream for preview, remove existing camera
-      if (localStream) {
-        localStream.getVideoTracks().forEach(t => { t.stop(); localStream.removeTrack(t); });
-        localStream.addTrack(track);
-        if (localVideoRef.current) localVideoRef.current.srcObject = localStream;
+      const s = localStreamRef.current;
+      if (s) {
+        s.getVideoTracks().forEach(t => { t.stop(); s.removeTrack(t); });
+        s.addTrack(track);
+        setLocalStream(new MediaStream(s.getTracks()));
       }
-      replaceVideoSender(track);
+      replaceVideoTrack(track);
       setScreenSharing(true);
-      // When user stops sharing via browser UI
       track.onended = () => stopScreenShare();
-    } catch (e) {
-      console.error('screen share failed', e);
-    }
+    } catch (e) { console.warn('Screen share cancelled:', e); }
   };
 
-  // ---------- View: not connected ----------
-  if (!isConnected) {
-    return (
-      <div className="flex-1 flex flex-col items-center justify-center gap-6 bg-discord-bg-primary">
-        <div className="text-center">
-          <div className="w-20 h-20 rounded-full bg-discord-bg-secondary flex items-center justify-center mb-4 mx-auto">
-            <Volume2 size={36} className="text-discord-text-muted" />
-          </div>
-          <h2 className="text-2xl font-bold text-white mb-2">{channel.name}</h2>
-          <p className="text-discord-text-muted text-sm mb-6">
-            Voice Channel — {server.name}
-          </p>
-          <button
-            onClick={onJoin}
-            className="px-8 py-3 bg-discord-online hover:bg-discord-online/80 text-white font-semibold rounded-md transition-colors"
-          >
-            Join Voice Channel
-          </button>
-        </div>
-        {voiceUsers.length > 0 && (
-          <div className="text-sm text-discord-text-muted flex items-center gap-2">
-            <Users size={14} />
-            {voiceUsers.length} user{voiceUsers.length !== 1 ? 's' : ''} in channel
-          </div>
-        )}
-      </div>
-    );
-  }
+  // ─── Build participant list (local first, then remotes in join order) ───────
 
-  // ---------- View: connected (Figma-matching grid + floating controls) ----------
   const participants: Participant[] = [
     {
-      socketId: 'local',
-      userId: user?.id || 'me',
-      username: user?.username || 'You',
+      socketId:  'local',
+      userId:    user?.id       || 'me',
+      username:  user?.username || 'You',
       avatar_url: user?.avatar_url,
       muted,
       isLocal: true,
       stream: localStream,
     },
     ...voiceUsers.map(vu => ({
-      socketId: vu.socketId,
-      userId: vu.userId,
-      username: vu.username,
+      socketId:  vu.socketId,
+      userId:    vu.userId,
+      username:  vu.username,
       avatar_url: vu.avatar_url,
-      muted: vu.muted,
-      isLocal: false,
-      stream: remoteStreams[vu.socketId] || null,
+      muted:     vu.muted ?? false,
+      isLocal:   false,
+      stream:    remoteStreams[vu.socketId] ?? null,
     })),
   ];
 
-  // Grid columns based on count (matches the 2x2 Figma layout for 4 users)
-  const gridCols =
-    participants.length === 1 ? 'grid-cols-1' :
-    participants.length === 2 ? 'grid-cols-2' :
-    participants.length <= 4 ? 'grid-cols-2' :
-    participants.length <= 9 ? 'grid-cols-3' : 'grid-cols-4';
+  const count = participants.length;
+
+  // ─── Render: full-screen call UI (no pre-join screen) ───────────────────────
 
   return (
-    <div className="flex-1 flex flex-col bg-black relative">
-      {/* Top header strip */}
-      <div className="flex items-center px-4 h-12 border-b border-black/50 bg-[#0a0a0a] flex-shrink-0 z-10">
-        <Volume2 size={18} className="text-discord-online mr-2" />
+    <div className="flex-1 flex flex-col relative overflow-hidden" style={{ background: '#1a1a1a' }}>
+      {/* Top strip */}
+      <div className="flex-shrink-0 flex items-center gap-2 px-4 h-10 text-sm z-10"
+           style={{ background: '#111111' }}>
+        <Volume2 size={15} className="text-[#23a55a]" />
         <span className="font-semibold text-white">{channel.name}</span>
-        <span className="mx-2 text-discord-text-muted">/</span>
-        <span className="text-discord-text-muted text-sm">{server.name}</span>
-        <div className="ml-3 flex items-center gap-1.5">
-          <span className="w-2 h-2 rounded-full bg-discord-online animate-pulse" />
-          <span className="text-xs text-discord-online font-semibold uppercase tracking-wide">
-            Voice Connected
+        <span className="text-white/30">/</span>
+        <span className="text-white/50">{server.name}</span>
+        {isConnected && (
+          <span className="ml-2 flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#23a55a] animate-pulse" />
+            <span className="text-[10px] font-bold uppercase tracking-wider text-[#23a55a]">Live</span>
           </span>
-        </div>
-        <div className="ml-auto flex items-center gap-2 text-discord-text-muted text-sm">
-          <Users size={14} />
-          {participants.length}
+        )}
+        <div className="ml-auto flex items-center gap-1 text-white/40">
+          <Users size={13} />
+          <span>{count}</span>
         </div>
       </div>
 
-      {/* Video tile grid */}
-      <div className="flex-1 p-2 overflow-hidden">
-        <div className={`grid ${gridCols} gap-2 w-full h-full auto-rows-fr`}>
+      {/* Tile grid */}
+      <div className="flex-1 p-3 overflow-hidden">
+        <div className="w-full h-full grid gap-3" style={gridStyle(count)}>
           {participants.map(p => (
-            <ParticipantTile
+            <Tile
               key={p.socketId}
               participant={p}
               speaking={speakingIds.has(p.isLocal ? 'local' : p.socketId)}
-              localVideoRef={p.isLocal ? localVideoRef : undefined}
-              showVideo={p.isLocal ? (videoOn || screenSharing) : !!p.stream?.getVideoTracks().length}
+              hasVideo={p.isLocal
+                ? (videoOn || screenSharing)
+                : !!(p.stream?.getVideoTracks().length)}
             />
           ))}
         </div>
       </div>
 
-      {/* Floating control bar (matches Figma: 3 dark pills + red leave button) */}
-      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 z-20">
-        {/* Pill 1: Mic + dropdown */}
-        <div className="flex items-center bg-[#1f1f23] rounded-full h-[54px] px-1">
-          <button
-            onClick={toggleMute}
-            title={muted ? 'Unmute' : 'Mute'}
-            className={`w-11 h-11 rounded-full flex items-center justify-center transition-colors ${
-              muted ? 'text-discord-danger' : 'text-white hover:bg-white/10'
-            }`}
-          >
-            {muted ? <MicOff size={20} /> : <Mic size={20} />}
-          </button>
-          <div className="w-px h-7 bg-white/10" />
-          <button className="w-7 h-11 flex items-center justify-center text-white/70 hover:text-white" title="Audio devices">
-            <ChevronDown size={16} />
-          </button>
-        </div>
-
-        {/* Pill 2: Video + Screen share + React + More */}
-        <div className="flex items-center bg-[#1f1f23] rounded-full h-[54px] px-1 gap-0.5">
-          <button
-            onClick={toggleVideo}
-            title={videoOn ? 'Stop camera' : 'Start camera'}
-            className={`w-11 h-11 rounded-full flex items-center justify-center transition-colors ${
-              videoOn ? 'text-discord-online bg-white/5' : 'text-white hover:bg-white/10'
-            }`}
-          >
-            {videoOn ? <Video size={20} /> : <VideoOff size={20} />}
-          </button>
-          <button className="w-6 h-11 flex items-center justify-center text-white/70 hover:text-white" title="Video devices">
-            <ChevronDown size={14} />
-          </button>
-          <div className="w-px h-7 bg-white/10 mx-0.5" />
-          <button
-            onClick={toggleScreenShare}
-            title={screenSharing ? 'Stop sharing' : 'Share screen'}
-            className={`w-11 h-11 rounded-full flex items-center justify-center transition-colors ${
-              screenSharing ? 'text-discord-online bg-white/5' : 'text-white hover:bg-white/10'
-            }`}
-          >
-            {screenSharing ? <MonitorOff size={20} /> : <Monitor size={20} />}
-          </button>
-          <button className="w-11 h-11 rounded-full flex items-center justify-center text-white hover:bg-white/10" title="Soundboard">
-            <PartyPopper size={20} />
-          </button>
-          <button className="w-11 h-11 rounded-full flex items-center justify-center text-white hover:bg-white/10" title="More">
-            <MoreHorizontal size={20} />
-          </button>
-        </div>
-
-        {/* Pill 3: Leave call (red) */}
-        <button
-          onClick={onJoin}
-          title="Disconnect"
-          className="bg-discord-danger hover:bg-[#c93437] rounded-full h-[54px] w-[73px] flex items-center justify-center text-white transition-colors shadow-lg"
+      {/* Control bar */}
+      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20">
+        <div
+          className="flex items-center gap-2 px-3 rounded-full shadow-2xl"
+          style={{ background: '#111111', height: 60, border: '1px solid rgba(255,255,255,0.06)' }}
         >
-          <PhoneOff size={22} />
-        </button>
-      </div>
+          <ControlBtn onClick={toggleMute}        active={muted}        danger={muted}        title={muted ? 'Unmute' : 'Mute'}>
+            {muted ? <MicOff size={20} /> : <Mic size={20} />}
+          </ControlBtn>
 
-      {/* Bottom-left: deafen quick toggle */}
-      <button
-        className="absolute bottom-6 left-6 w-11 h-11 rounded-full bg-[#1f1f23] text-white hover:bg-white/10 flex items-center justify-center z-20"
-        title="Deafen"
-      >
-        <Headphones size={18} />
-      </button>
+          <Divider />
+
+          <ControlBtn onClick={toggleCamera}      active={videoOn}       title={videoOn ? 'Stop camera' : 'Start camera'}>
+            {videoOn ? <Video size={20} /> : <VideoOff size={20} />}
+          </ControlBtn>
+
+          <ControlBtn onClick={toggleScreenShare} active={screenSharing} title={screenSharing ? 'Stop sharing' : 'Share screen'}>
+            {screenSharing ? <MonitorOff size={20} /> : <Monitor size={20} />}
+          </ControlBtn>
+
+          <Divider />
+
+          {/* Participant count */}
+          <div
+            className="flex items-center gap-1.5 px-3 h-10 rounded-full text-white/70 text-xs font-semibold select-none"
+            style={{ background: 'rgba(255,255,255,0.05)' }}
+            title={`${count} in call`}
+          >
+            <Users size={13} />
+            {count}
+          </div>
+
+          <Divider />
+
+          {/* Leave (red) */}
+          <button
+            onClick={onJoin}
+            title="Leave call"
+            className="flex items-center justify-center rounded-full text-white transition-opacity hover:opacity-80 active:scale-95"
+            style={{ background: '#ed4245', width: 44, height: 44 }}
+          >
+            <PhoneOff size={18} />
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
 
-// ============================================================
-// Participant Tile (matches Figma: solid color bg, centered avatar)
-// ============================================================
-function ParticipantTile({ participant, speaking, localVideoRef, showVideo }: {
-  participant: Participant;
-  speaking: boolean;
-  localVideoRef?: React.RefObject<HTMLVideoElement>;
-  showVideo: boolean;
-}) {
-  const remoteVideoRef = useRef<HTMLVideoElement>(null);
-  useEffect(() => {
-    if (!participant.isLocal && remoteVideoRef.current && participant.stream) {
-      remoteVideoRef.current.srcObject = participant.stream;
-    }
-  }, [participant.stream, participant.isLocal]);
+// ─── Tile ─────────────────────────────────────────────────────────────────────
 
-  const tileBg = tileColorFor(participant.userId);
-  const avatarBg = avatarColorFor(participant.username);
-  const initials = participant.username.slice(0, 1).toUpperCase();
+function Tile({
+  participant,
+  speaking,
+  hasVideo,
+}: {
+  participant: Participant;
+  speaking:    boolean;
+  hasVideo:    boolean;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (el && participant.stream && el.srcObject !== participant.stream) {
+      el.srcObject = participant.stream;
+    }
+  }, [participant.stream]);
+
+  const bg      = tileColor(participant.userId);
+  const avatBg  = avatarColor(participant.username);
+  const initial = participant.username.charAt(0).toUpperCase() || '?';
 
   return (
     <div
-      className={`relative rounded-lg overflow-hidden flex items-center justify-center transition-all duration-150 ${
-        speaking ? 'ring-4 ring-discord-online' : 'ring-0'
-      }`}
-      style={{ background: tileBg }}
+      className="relative rounded-xl overflow-hidden flex items-center justify-center transition-shadow duration-150"
+      style={{
+        background: bg,
+        boxShadow: speaking ? '0 0 0 3px #23a55a' : '0 0 0 3px transparent',
+      }}
     >
-      {/* Video element (always present so srcObject can mount; hidden when no video) */}
+      {/* Video element — kept mounted so we don't re-attach srcObject every toggle */}
       <video
-        ref={participant.isLocal ? localVideoRef : remoteVideoRef}
+        ref={videoRef}
         autoPlay
         playsInline
         muted={participant.isLocal}
-        className={`w-full h-full object-cover ${showVideo ? '' : 'hidden'}`}
+        className="absolute inset-0 w-full h-full object-cover"
+        style={{ display: hasVideo ? 'block' : 'none' }}
       />
 
       {/* Avatar fallback when no video */}
-      {!showVideo && (
+      {!hasVideo && (
         participant.avatar_url ? (
           <img
             src={participant.avatar_url}
             alt={participant.username}
-            className="w-[90px] h-[90px] rounded-full object-cover"
+            className="rounded-full object-cover"
+            style={{ width: 90, height: 90 }}
           />
         ) : (
           <div
-            className="w-[90px] h-[90px] rounded-full flex items-center justify-center text-white text-4xl font-bold"
-            style={{ background: avatarBg }}
+            className="rounded-full flex items-center justify-center text-white font-bold text-4xl"
+            style={{ width: 90, height: 90, background: avatBg }}
           >
-            {initials}
+            {initial}
           </div>
         )
       )}
 
-      {/* Name label */}
-      <div className="absolute bottom-2 left-2 flex items-center gap-1.5 bg-black/60 backdrop-blur-sm px-2.5 py-1 rounded text-xs text-white">
-        {participant.muted && <MicOff size={11} className="text-discord-danger" />}
-        <span className="font-medium">
-          {participant.username}{participant.isLocal ? ' (you)' : ''}
-        </span>
+      {/* Name tag */}
+      <div
+        className="absolute bottom-2 left-2 flex items-center gap-1 px-2 py-0.5 rounded text-xs text-white font-medium"
+        style={{ background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(4px)' }}
+      >
+        {participant.muted && <MicOff size={10} className="text-[#ed4245]" />}
+        {participant.username}{participant.isLocal ? ' (you)' : ''}
       </div>
     </div>
   );
+}
+
+// ─── Small UI primitives ──────────────────────────────────────────────────────
+
+function ControlBtn({
+  children, onClick, active = false, danger = false, title,
+}: {
+  children: React.ReactNode;
+  onClick:  () => void;
+  active?:  boolean;
+  danger?:  boolean;
+  title?:   string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className="flex items-center justify-center rounded-full transition-all active:scale-95"
+      style={{
+        width: 44,
+        height: 44,
+        color:      danger ? '#ed4245' : active ? '#23a55a' : 'rgba(255,255,255,0.75)',
+        background: active && !danger ? 'rgba(35,165,90,0.15)' : 'transparent',
+      }}
+      onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.08)')}
+      onMouseLeave={e => (e.currentTarget.style.background = active && !danger ? 'rgba(35,165,90,0.15)' : 'transparent')}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Divider() {
+  return <div className="w-px mx-1" style={{ height: 28, background: 'rgba(255,255,255,0.08)' }} />;
 }
