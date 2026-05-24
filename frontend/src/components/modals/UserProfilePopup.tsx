@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
 import { useAuthStore } from '../../store/authStore';
-import { Check, LogOut } from 'lucide-react';
+import { Check, LogOut, Settings } from 'lucide-react';
 
 type Status = 'online' | 'idle' | 'dnd' | 'offline';
 
 interface Props {
   onClose: () => void;
+  onOpenSettings?: () => void;
 }
 
 const STATUSES: { value: Status; label: string; color: string; desc: string }[] = [
@@ -15,7 +16,7 @@ const STATUSES: { value: Status; label: string; color: string; desc: string }[] 
   { value: 'offline', label: 'Invisible',       color: 'bg-discord-text-muted', desc: 'You appear offline.' },
 ];
 
-export default function UserProfilePopup({ onClose }: Props) {
+export default function UserProfilePopup({ onClose, onOpenSettings }: Props) {
   const { user, setStatus, logout } = useAuthStore();
   const ref = useRef<HTMLDivElement>(null);
   const [saving, setSaving] = useState<Status | null>(null);
@@ -99,8 +100,17 @@ export default function UserProfilePopup({ onClose }: Props) {
         </div>
       </div>
 
-      {/* Logout */}
-      <div className="px-3 pb-3 border-t border-discord-bg-accent pt-2">
+      {/* Edit profile + Logout */}
+      <div className="px-3 pb-3 border-t border-discord-bg-accent pt-2 space-y-0.5">
+        {onOpenSettings && (
+          <button
+            onClick={onOpenSettings}
+            className="w-full flex items-center gap-2 px-3 py-2 text-white text-sm rounded hover:bg-discord-bg-hover transition-colors"
+          >
+            <Settings size={16} />
+            Edit Profile
+          </button>
+        )}
         <button
           onClick={() => { logout(); onClose(); }}
           className="w-full flex items-center gap-2 px-3 py-2 text-discord-danger text-sm rounded hover:bg-discord-danger/10 transition-colors"

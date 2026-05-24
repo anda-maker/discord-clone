@@ -1,7 +1,16 @@
 import { useState, useRef, useEffect } from 'react';
 import { Message } from '../../types';
 import { format, isToday, isYesterday } from 'date-fns';
-import { Reply, Edit2, Trash2, MoreHorizontal } from 'lucide-react';
+import { Reply, Edit2, Trash2 } from 'lucide-react';
+
+// Match any URL that points to a chat-images upload OR ends in an image extension.
+const IMAGE_URL_RE = /(https?:\/\/\S+\.(?:png|jpe?g|gif|webp)(?:\?\S*)?|https?:\/\/[^\s]*\/chat-images\/[^\s]+)/gi;
+
+function splitMessageBody(text: string): { text: string; images: string[] } {
+  const images: string[] = [];
+  const stripped = text.replace(IMAGE_URL_RE, (m) => { images.push(m); return ''; });
+  return { text: stripped.replace(/\n{2,}/g, '\n').trim(), images };
+}
 
 interface Props {
   message: Message;
@@ -110,12 +119,38 @@ export default function MessageItem({ message, grouped, isOwn, onEdit, onDelete,
             </p>
           </div>
         ) : (
-          <p className="text-sm text-discord-text-normal leading-relaxed break-words discord-message">
-            {message.content}
-            {message.edited_at && (
-              <span className="text-xs text-discord-text-muted ml-1">(edited)</span>
-            )}
-          </p>
+          (() => {
+            const { text, images } = splitMessageBody(message.content);
+            return (
+              <>
+                {text && (
+                  <p className="text-sm text-discord-text-normal leading-relaxed break-words discord-message whitespace-pre-wrap">
+                    {text}
+                    {message.edited_at && (
+                      <span className="text-xs text-discord-text-muted ml-1">(edited)</span>
+                    )}
+                  </p>
+                )}
+                {images.length > 0 && (
+                  <div className={`mt-1 flex flex-wrap gap-2 ${text ? '' : 'mt-0'}`}>
+                    {images.map((src, i) => (
+                      <a key={i} href={src} target="_blank" rel="noopener noreferrer">
+                        <img
+                          src={src}
+                          alt="attachment"
+                          className="rounded-md max-w-[400px] max-h-[300px] object-cover border border-discord-bg-accent hover:brightness-110 transition"
+                          loading="lazy"
+                        />
+                      </a>
+                    ))}
+                  </div>
+                )}
+                {!text && images.length === 0 && (
+                  <p className="text-sm text-discord-text-muted italic">[empty message]</p>
+                )}
+              </>
+            );
+          })()
         )}
       </div>
 

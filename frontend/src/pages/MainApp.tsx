@@ -62,6 +62,16 @@ export default function MainApp() {
     }
   };
 
+  const handleChannelCreated = (channel: Channel) => {
+    if (!selectedServer) return;
+    const updated = {
+      ...selectedServer,
+      channels: [...(selectedServer.channels || []), channel].sort((a, b) => a.position - b.position),
+    };
+    setSelectedServer(updated);
+    if (channel.type === 'text') setSelectedChannel(channel);
+  };
+
   return (
     <div className="flex w-screen h-screen overflow-hidden bg-discord-bg-primary">
       {/* Server list */}
@@ -83,6 +93,7 @@ export default function MainApp() {
           voiceChannelId={voiceChannel?.id}
           voiceChannelName={voiceChannel?.name}
           onLeaveVoice={() => setVoiceChannel(null)}
+          onChannelCreated={handleChannelCreated}
           voiceBottom={<UserPanel voiceChannel={voiceChannel} onLeaveVoice={() => setVoiceChannel(null)} />}
         />
       )}

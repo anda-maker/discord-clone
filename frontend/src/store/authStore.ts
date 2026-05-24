@@ -14,6 +14,8 @@ interface AuthState {
   logout: () => Promise<void>;
   loadSession: () => Promise<void>;
   setStatus: (status: 'online' | 'idle' | 'dnd' | 'offline') => Promise<void>;
+  updateProfile: (patch: Partial<Pick<User, 'username' | 'avatar_url' | 'status'>>) => Promise<void>;
+  uploadAvatar: (file: File) => Promise<string>;
 }
 
 async function hydrateUser(userId: string, email: string | undefined, fallbackStatus: User['status'] = 'online'): Promise<User> {
@@ -55,8 +57,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   register: async (email, password, username) => {
-    // Go through the backend so we can use the service-role admin API to skip
-    // the email-confirmation flow entirely.
     const res = await fetch(`${API_URL}/api/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -66,8 +66,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || 'Registration failed');
     }
-    // Now sign in through the supabase-js client so the SDK manages the session
-    // (and auto-refreshes the access token going forward).
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw error;
     const user = await hydrateUser(data.user.id, data.user.email ?? undefined);
@@ -88,5 +86,26 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (!user) return;
     set({ user: { ...user, status } });
     await supabase.from('profiles').update({ status }).eq('id', user.id);
+  },
+
+  updateProfile: async (patch) => {
+    const { user } = get();
+    if (!user) return;
+    const { error } = await supabase.from('profiles').update(patch).eq('id', user.id);
+    if (error) throw error;
+    set({ user: { ...user, ...patch } });
+  },
+
+  uploadAvatar: async (file) => {
+    const { user } = get();
+    if (!user) throw new Error('Not signed in');
+    const ext = (file.name.split('.').pop() || 'png').toLowerCase();
+    const path = `${user.id}/${Date.now()}.${ext}`;
+    const { error: upErr } = await supabase.storage
+      .from('avatars')
+      .upload(path, file, { cacheControl: '3600', upsert: true, contentType: file.type });
+    if (upErr) throw upErr;
+    const { data } = supabase.storage.from('avatars').getPublicUrl(path);
+    return data.publicUrl;
   },
 }));

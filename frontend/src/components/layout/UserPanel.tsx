@@ -3,6 +3,7 @@ import { useAuthStore } from '../../store/authStore';
 import { Channel } from '../../types';
 import { Mic, MicOff, Headphones, Settings, PhoneOff } from 'lucide-react';
 import UserProfilePopup from '../modals/UserProfilePopup';
+import ProfileSettingsModal from '../modals/ProfileSettingsModal';
 
 interface Props {
   voiceChannel: Channel | null;
@@ -20,7 +21,8 @@ export default function UserPanel({ voiceChannel, onLeaveVoice }: Props) {
   const { user } = useAuthStore();
   const [muted, setMuted] = useState(false);
   const [deafened, setDeafened] = useState(false);
-  const [showProfile, setShowProfile] = useState(false);
+  const [showPopup, setShowPopup] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
 
   if (!user) return null;
 
@@ -58,9 +60,9 @@ export default function UserPanel({ voiceChannel, onLeaveVoice }: Props) {
 
       {/* User info */}
       <div className="flex items-center gap-2">
-        <div className="relative cursor-pointer" onClick={() => setShowProfile(v => !v)}>
+        <div className="relative cursor-pointer" onClick={() => setShowPopup(v => !v)}>
           {user.avatar_url ? (
-            <img src={user.avatar_url} className="w-8 h-8 rounded-full" alt="" />
+            <img src={user.avatar_url} className="w-8 h-8 rounded-full object-cover" alt="" />
           ) : (
             <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-semibold"
               style={{ background: avatarColor }}>
@@ -70,7 +72,7 @@ export default function UserPanel({ voiceChannel, onLeaveVoice }: Props) {
           <div className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full ${statusColor} border-2 border-[#232428]`} />
         </div>
 
-        <div className="flex-1 min-w-0 cursor-pointer" onClick={() => setShowProfile(v => !v)}>
+        <div className="flex-1 min-w-0 cursor-pointer" onClick={() => setShowPopup(v => !v)}>
           <p className="text-sm font-semibold text-white truncate leading-tight">{user.username}</p>
           <p className="text-xs text-discord-text-muted leading-tight">
             #{user.discriminator || '0000'}
@@ -93,14 +95,22 @@ export default function UserPanel({ voiceChannel, onLeaveVoice }: Props) {
           >
             <Headphones size={16} />
           </IconButton>
-          <IconButton onClick={() => setShowProfile(v => !v)} title="User Settings">
+          <IconButton onClick={() => setShowSettings(true)} title="User Settings">
             <Settings size={16} />
           </IconButton>
         </div>
       </div>
 
-      {/* Profile popup */}
-      {showProfile && <UserProfilePopup onClose={() => setShowProfile(false)} />}
+      {/* Quick popup (avatar click) */}
+      {showPopup && (
+        <UserProfilePopup
+          onClose={() => setShowPopup(false)}
+          onOpenSettings={() => { setShowPopup(false); setShowSettings(true); }}
+        />
+      )}
+
+      {/* Full settings modal (gear click) */}
+      {showSettings && <ProfileSettingsModal onClose={() => setShowSettings(false)} />}
     </div>
   );
 }
