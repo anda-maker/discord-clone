@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Server, Channel } from '../../types';
-import { ChevronDown, Hash, Volume2, Settings, Lock } from 'lucide-react';
+import { ChevronDown, Hash, Volume2, Settings, PhoneOff, Signal } from 'lucide-react';
 import InviteModal from '../modals/InviteModal';
 
 interface Props {
@@ -9,10 +9,21 @@ interface Props {
   onSelectChannel: (c: Channel) => void;
   onJoinVoice: (c: Channel) => void;
   voiceChannelId?: string;
+  voiceChannelName?: string;
+  onLeaveVoice?: () => void;
   voiceBottom: React.ReactNode;
 }
 
-export default function ChannelSidebar({ server, selectedChannel, onSelectChannel, onJoinVoice, voiceChannelId, voiceBottom }: Props) {
+export default function ChannelSidebar({
+  server,
+  selectedChannel,
+  onSelectChannel,
+  onJoinVoice,
+  voiceChannelId,
+  voiceChannelName,
+  onLeaveVoice,
+  voiceBottom,
+}: Props) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [showSettings, setShowSettings] = useState(false);
   const [showInvite, setShowInvite] = useState(false);
@@ -77,15 +88,45 @@ export default function ChannelSidebar({ server, selectedChannel, onSelectChanne
               </button>
 
               {/* Channels in category */}
-              {!isCollapsed && catChannels.map(channel => (
-                <ChannelItem
-                  key={channel.id}
-                  channel={channel}
-                  selected={selectedChannel?.id === channel.id}
-                  inVoice={voiceChannelId === channel.id}
-                  onClick={() => channel.type === 'voice' ? onJoinVoice(channel) : onSelectChannel(channel)}
-                />
-              ))}
+              {!isCollapsed && catChannels.map(channel => {
+                const inVoice = voiceChannelId === channel.id;
+                return (
+                  <div key={channel.id}>
+                    <ChannelItem
+                      channel={channel}
+                      selected={selectedChannel?.id === channel.id}
+                      inVoice={inVoice}
+                      onClick={() => channel.type === 'voice' ? onJoinVoice(channel) : onSelectChannel(channel)}
+                    />
+                    {inVoice && (
+                      <div className="mx-3 mt-1 mb-2 bg-discord-online/10 border border-discord-online/40 rounded-md p-2 animate-fade-in">
+                        <div className="flex items-center justify-between">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <Signal size={12} className="text-discord-online" />
+                              <span className="text-[10px] font-bold text-discord-online uppercase tracking-wide">
+                                Connected
+                              </span>
+                            </div>
+                            <p className="text-xs text-white mt-0.5 truncate font-medium">
+                              {voiceChannelName || channel.name} / {server.name}
+                            </p>
+                          </div>
+                          {onLeaveVoice && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); onLeaveVoice(); }}
+                              className="p-1 rounded hover:bg-discord-danger/20 text-discord-text-muted hover:text-discord-danger transition-colors flex-shrink-0"
+                              title="Disconnect"
+                            >
+                              <PhoneOff size={12} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           );
         })}
@@ -111,7 +152,7 @@ function ChannelItem({ channel, selected, inVoice, onClick }: {
           ? 'bg-discord-bg-hover text-discord-interactive-active'
           : 'text-discord-channel-text hover:bg-discord-bg-hover hover:text-discord-channel-hover'
         }
-        ${inVoice ? 'text-discord-online' : ''}
+        ${inVoice ? '!text-discord-online' : ''}
       `}
       style={{ width: 'calc(100% - 8px)' }}
     >
@@ -122,7 +163,9 @@ function ChannelItem({ channel, selected, inVoice, onClick }: {
       )}
       <span className="truncate">{channel.name}</span>
       {inVoice && (
-        <span className="ml-auto text-xs text-discord-online font-medium">●</span>
+        <span className="ml-auto flex items-center gap-1">
+          <span className="w-1.5 h-1.5 rounded-full bg-discord-online animate-pulse" />
+        </span>
       )}
       <Settings
         size={14}

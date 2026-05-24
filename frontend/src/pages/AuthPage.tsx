@@ -1,8 +1,11 @@
 import { useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
 
 export default function AuthPage() {
-  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [searchParams] = useSearchParams();
+  const initialMode = searchParams.get('mode') === 'register' ? 'register' : 'login';
+  const [mode, setMode] = useState<'login' | 'register'>(initialMode);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [username, setUsername] = useState('');
@@ -114,6 +117,12 @@ export default function AuthPage() {
             ) : (
               <>Already have an account? <button onClick={() => setMode('login')} className="text-discord-text-link hover:underline">Log in</button></>
             )}
+          </div>
+
+          <div className="mt-3 text-center">
+            <Link to="/" className="text-xs text-discord-text-muted hover:text-discord-text-link hover:underline">
+              ← Back to home
+            </Link>
           </div>
         </div>
       </div>

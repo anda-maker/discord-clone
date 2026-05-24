@@ -3,6 +3,8 @@ import { User } from '../types';
 import { supabase } from '../lib/supabase';
 import { connectSocket, disconnectSocket } from '../lib/socket';
 
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+
 interface AuthState {
   user: User | null;
   token: string | null;
@@ -11,9 +13,22 @@ interface AuthState {
   register: (email: string, password: string, username: string) => Promise<void>;
   logout: () => Promise<void>;
   loadSession: () => Promise<void>;
+  setStatus: (status: 'online' | 'idle' | 'dnd' | 'offline') => Promise<void>;
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
+async function hydrateUser(userId: string, email: string | undefined, fallbackStatus: User['status'] = 'online'): Promise<User> {
+  const { data: profile } = await supabase.from('profiles').select('*').eq('id', userId).single();
+  return {
+    id: userId,
+    email,
+    username: profile?.username || email || 'user',
+    discriminator: profile?.discriminator,
+    avatar_url: profile?.avatar_url,
+    status: profile?.status || fallbackStatus,
+  };
+}
+
+export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   token: null,
   loading: true,
@@ -21,15 +36,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   loadSession: async () => {
     const { data: { session } } = await supabase.auth.getSession();
     if (session) {
-      const { data: profile } = await supabase.from('profiles').select('*').eq('id', session.user.id).single();
-      const user: User = {
-        id: session.user.id,
-        email: session.user.email,
-        username: profile?.username || session.user.email!,
-        discriminator: profile?.discriminator,
-        avatar_url: profile?.avatar_url,
-        status: profile?.status || 'online',
-      };
+      const user = await hydrateUser(session.user.id, session.user.email ?? undefined);
       localStorage.setItem('discord_token', session.access_token);
       set({ user, token: session.access_token, loading: false });
       connectSocket(session.access_token);
@@ -41,37 +48,32 @@ export const useAuthStore = create<AuthState>((set) => ({
   login: async (email, password) => {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw error;
-    const { data: profile } = await supabase.from('profiles').select('*').eq('id', data.user.id).single();
-    const user: User = {
-      id: data.user.id,
-      email: data.user.email,
-      username: profile?.username || data.user.email!,
-      discriminator: profile?.discriminator,
-      avatar_url: profile?.avatar_url,
-      status: 'online',
-    };
+    const user = await hydrateUser(data.user.id, data.user.email ?? undefined);
     localStorage.setItem('discord_token', data.session.access_token);
     set({ user, token: data.session.access_token });
     connectSocket(data.session.access_token);
   },
 
   register: async (email, password, username) => {
-    const { data, error } = await supabase.auth.signUp({ email, password });
+    // Go through the backend so we can use the service-role admin API to skip
+    // the email-confirmation flow entirely.
+    const res = await fetch(`${API_URL}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password, username }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Registration failed');
+    }
+    // Now sign in through the supabase-js client so the SDK manages the session
+    // (and auto-refreshes the access token going forward).
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw error;
-    if (data.user) {
-      await supabase.from('profiles').upsert({
-        id: data.user.id,
-        username,
-        discriminator: Math.floor(1000 + Math.random() * 9000).toString(),
-        status: 'online',
-      });
-    }
-    // Auto-login after register
-    if (data.session) {
-      localStorage.setItem('discord_token', data.session.access_token);
-      set({ user: { id: data.user!.id, email, username }, token: data.session.access_token });
-      connectSocket(data.session.access_token);
-    }
+    const user = await hydrateUser(data.user.id, data.user.email ?? undefined);
+    localStorage.setItem('discord_token', data.session.access_token);
+    set({ user, token: data.session.access_token });
+    connectSocket(data.session.access_token);
   },
 
   logout: async () => {
@@ -79,5 +81,12 @@ export const useAuthStore = create<AuthState>((set) => ({
     localStorage.removeItem('discord_token');
     disconnectSocket();
     set({ user: null, token: null });
+  },
+
+  setStatus: async (status) => {
+    const { user } = get();
+    if (!user) return;
+    set({ user: { ...user, status } });
+    await supabase.from('profiles').update({ status }).eq('id', user.id);
   },
 }));

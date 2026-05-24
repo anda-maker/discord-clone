@@ -2,39 +2,52 @@ import { useState } from 'react';
 import { useAuthStore } from '../../store/authStore';
 import { Channel } from '../../types';
 import { Mic, MicOff, Headphones, Settings, PhoneOff } from 'lucide-react';
+import UserProfilePopup from '../modals/UserProfilePopup';
 
 interface Props {
   voiceChannel: Channel | null;
   onLeaveVoice: () => void;
 }
 
+const STATUS_COLORS: Record<string, string> = {
+  online: 'bg-discord-online',
+  idle: 'bg-discord-idle',
+  dnd: 'bg-discord-dnd',
+  offline: 'bg-discord-offline',
+};
+
 export default function UserPanel({ voiceChannel, onLeaveVoice }: Props) {
-  const { user, logout } = useAuthStore();
+  const { user } = useAuthStore();
   const [muted, setMuted] = useState(false);
   const [deafened, setDeafened] = useState(false);
-  const [showMenu, setShowMenu] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
 
   if (!user) return null;
 
   const avatarColor = '#5865f2';
   const initials = user.username?.slice(0, 1).toUpperCase() || '?';
+  const statusColor = STATUS_COLORS[user.status || 'online'] || 'bg-discord-online';
 
   return (
-    <div className="bg-[#232428] px-2 py-2 flex-shrink-0">
+    <div className="bg-[#232428] px-2 py-2 flex-shrink-0 relative">
       {/* Voice connection indicator */}
       {voiceChannel && (
-        <div className="mb-2 bg-[#1a1b1e] rounded-md p-2">
+        <div className="mb-2 bg-[#1a1b1e] rounded-md p-2 border border-discord-online/40">
           <div className="flex items-center justify-between">
-            <div>
+            <div className="min-w-0">
               <div className="flex items-center gap-1.5">
                 <div className="w-2 h-2 rounded-full bg-discord-online animate-pulse" />
-                <span className="text-xs font-semibold text-discord-online">Voice Connected</span>
+                <span className="text-xs font-bold text-discord-online uppercase tracking-wide">
+                  Voice Connected
+                </span>
               </div>
-              <p className="text-xs text-discord-text-muted mt-0.5 truncate">#{voiceChannel.name}</p>
+              <p className="text-xs text-white mt-0.5 truncate font-medium">
+                {voiceChannel.name}
+              </p>
             </div>
             <button
               onClick={onLeaveVoice}
-              className="p-1.5 rounded hover:bg-discord-danger/20 text-discord-text-muted hover:text-discord-danger transition-colors"
+              className="p-1.5 rounded hover:bg-discord-danger/20 text-discord-text-muted hover:text-discord-danger transition-colors flex-shrink-0"
               title="Disconnect"
             >
               <PhoneOff size={14} />
@@ -45,7 +58,7 @@ export default function UserPanel({ voiceChannel, onLeaveVoice }: Props) {
 
       {/* User info */}
       <div className="flex items-center gap-2">
-        <div className="relative cursor-pointer" onClick={() => setShowMenu(!showMenu)}>
+        <div className="relative cursor-pointer" onClick={() => setShowProfile(v => !v)}>
           {user.avatar_url ? (
             <img src={user.avatar_url} className="w-8 h-8 rounded-full" alt="" />
           ) : (
@@ -54,10 +67,10 @@ export default function UserPanel({ voiceChannel, onLeaveVoice }: Props) {
               {initials}
             </div>
           )}
-          <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-discord-online border-2 border-[#232428]" />
+          <div className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full ${statusColor} border-2 border-[#232428]`} />
         </div>
 
-        <div className="flex-1 min-w-0 cursor-pointer" onClick={() => setShowMenu(!showMenu)}>
+        <div className="flex-1 min-w-0 cursor-pointer" onClick={() => setShowProfile(v => !v)}>
           <p className="text-sm font-semibold text-white truncate leading-tight">{user.username}</p>
           <p className="text-xs text-discord-text-muted leading-tight">
             #{user.discriminator || '0000'}
@@ -80,27 +93,14 @@ export default function UserPanel({ voiceChannel, onLeaveVoice }: Props) {
           >
             <Headphones size={16} />
           </IconButton>
-          <IconButton onClick={() => {}} title="User Settings">
+          <IconButton onClick={() => setShowProfile(v => !v)} title="User Settings">
             <Settings size={16} />
           </IconButton>
         </div>
       </div>
 
-      {/* Context menu */}
-      {showMenu && (
-        <div className="absolute bottom-16 left-2 w-52 bg-[#111214] rounded-md shadow-xl z-50 p-1 animate-fade-in">
-          <div className="px-3 py-2 border-b border-discord-bg-accent mb-1">
-            <p className="text-sm font-semibold text-white">{user.username}</p>
-            <p className="text-xs text-discord-text-muted">#{user.discriminator}</p>
-          </div>
-          <button
-            onClick={() => { logout(); setShowMenu(false); }}
-            className="w-full text-left px-3 py-2 text-discord-danger text-sm rounded hover:bg-discord-bg-hover"
-          >
-            Log Out
-          </button>
-        </div>
-      )}
+      {/* Profile popup */}
+      {showProfile && <UserProfilePopup onClose={() => setShowProfile(false)} />}
     </div>
   );
 }

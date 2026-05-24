@@ -1,12 +1,10 @@
 import { useState, useEffect } from 'react';
-import { Routes, Route } from 'react-router-dom';
 import ServerList from '../components/layout/ServerList';
 import ChannelSidebar from '../components/layout/ChannelSidebar';
 import ChatArea from '../components/chat/ChatArea';
 import UserPanel from '../components/layout/UserPanel';
 import VoiceArea from '../components/voice/VoiceArea';
 import MembersPanel from '../components/layout/MembersPanel';
-import InviteModal from '../components/modals/InviteModal';
 import CreateServerModal from '../components/modals/CreateServerModal';
 import JoinServerModal from '../components/modals/JoinServerModal';
 import { Server, Channel } from '../types';
@@ -83,6 +81,8 @@ export default function MainApp() {
           onSelectChannel={setSelectedChannel}
           onJoinVoice={handleJoinVoice}
           voiceChannelId={voiceChannel?.id}
+          voiceChannelName={voiceChannel?.name}
+          onLeaveVoice={() => setVoiceChannel(null)}
           voiceBottom={<UserPanel voiceChannel={voiceChannel} onLeaveVoice={() => setVoiceChannel(null)} />}
         />
       )}
